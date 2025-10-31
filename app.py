@@ -15,7 +15,8 @@ st.set_page_config(
 
 st.title("Conversor Universal de Imagens em Lote")
 st.write(
-    "Converta imagens de **qualquer formato** para **outro formato**, com redimensionamento, compressão adaptativa e suporte a pastas."
+    "Converta imagens de **qualquer formato** para **outro formato**, \
+    com redimensionamento, compressão adaptativa e suporte a pastas."
 )
 
 # OPÇÕES DE FORMATO
@@ -23,9 +24,11 @@ formatos_suportados = ["JPG", "JPEG", "PNG", "WEBP", "BMP", "TIFF"]
 
 col1, col2 = st.columns(2)
 with col1:
-    formato_entrada = st.selectbox("Formato de entrada", formatos_suportados, index=0)
+    formato_entrada = st.selectbox(
+        "Formato de entrada", formatos_suportados, index=0)
 with col2:
-    formato_saida = st.selectbox("Formato de saída", formatos_suportados, index=2)
+    formato_saida = st.selectbox(
+        "Formato de saída", formatos_suportados, index=2)
 
 # MODO DE CONVERSÃO
 modo = st.radio(
@@ -52,9 +55,11 @@ st.subheader("Configurações adicionais")
 
 col3, col4 = st.columns(2)
 with col3:
-    max_width = st.number_input("Largura máxima (px, 0 = manter original)", 0, 10000, 0)
+    max_width = st.number_input(
+        "Largura máxima (px, 0 = manter original)", 0, 10000, 0)
 with col4:
-    max_height = st.number_input("Altura máxima (px, 0 = manter original)", 0, 10000, 0)
+    max_height = st.number_input(
+        "Altura máxima (px, 0 = manter original)", 0, 10000, 0)
 
 adaptive_compression = st.checkbox(
     "Ativar compressão adaptativa (baseada no tamanho original)", True
@@ -70,19 +75,40 @@ else:
 def process_image(file_data, filename):
     try:
         image = Image.open(io.BytesIO(file_data))
+        icc_profile = image.info.get("icc_profile")
         original_size_kb = len(file_data) / 1024
 
         # Redimensionamento automático
         if max_width > 0 or max_height > 0:
-            image.thumbnail((max_width or image.width, max_height or image.height))
+            image.thumbnail(
+                (max_width or image.width, max_height or image.height),
+                resample=Image.LANCZOS,
+            )
 
-        # Tratamento de transparência para JPG
-        if formato_saida in ["JPG", "JPEG"] and image.mode in ("RGBA", "LA"):
-            background = Image.new("RGB", image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[-1])
-            image = background
+        # Normalização de modos levando em conta transparência
+        has_alpha = (
+            image.mode in ("RGBA", "LA")
+            or (image.mode == "P" and ("transparency" in image.info))
+        )
+
+        if formato_saida in ["JPG", "JPEG"]:
+            # Compor sobre fundo branco para JPG, que não suporta alfa
+            if has_alpha:
+                if image.mode not in ("RGBA", "LA"):
+                    image = image.convert("RGBA")
+                background = Image.new("RGB", image.size, (255, 255, 255))
+                background.paste(image, mask=image.split()[-1])
+                image = background
+            else:
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
         else:
-            image = image.convert("RGB")
+            # Para formatos que suportam alfa (PNG/WEBP/TIFF),
+            # preservar alfa quando existir
+            if has_alpha and image.mode != "RGBA":
+                image = image.convert("RGBA")
+            elif not has_alpha and image.mode != "RGB":
+                image = image.convert("RGB")
 
         # Compressão adaptativa
         quality = base_quality
@@ -100,12 +126,37 @@ def process_image(file_data, filename):
 
         output = io.BytesIO()
         save_params = {"format": formato_saida}
-        if quality:
-            save_params["quality"] = quality
+
+        # Preservar perfil ICC quando existir
+        # (evita alteração de cores/contraste)
+        if icc_profile:
+            save_params["icc_profile"] = icc_profile
+
+        if formato_saida in ["JPG", "JPEG"]:
+            if quality:
+                save_params["quality"] = quality
+            # Melhor fidelidade de cor para JPEG
+            save_params["subsampling"] = 0
+            save_params["optimize"] = True
+        elif formato_saida == "PNG":
+            # PNG é lossless; otimizar e manter alfa quando houver
+            save_params["optimize"] = True
+        elif formato_saida == "WEBP":
+            # Ajustes do WebP para preservar alfa e cores
+            # method 6 = mais lento, melhor compressão/qualidade
+            save_params["method"] = 6
+            if has_alpha:
+                # 'exact=True' preserva os valores de cor dos pixels
+                # transparentes (evita halos)
+                save_params["exact"] = True
+                save_params["alpha_quality"] = 100
+            if quality:
+                save_params["quality"] = quality
 
         image.save(output, **save_params)
         output.seek(0)
-        new_filename = os.path.splitext(filename)[0] + f".{formato_saida.lower()}"
+        new_filename = os.path.splitext(
+            filename)[0] + f".{formato_saida.lower()}"
         return new_filename, output
 
     except Exception as e:
@@ -140,7 +191,8 @@ if (modo == "Arquivos individuais" and uploaded_files) or (
 
     # Processamento assíncrono
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        results = list(executor.map(lambda data: process_image(*data), all_files))
+        results = list(executor.map(
+            lambda data: process_image(*data), all_files))
 
         for i, result in enumerate(results):
             converted_files.append(result)
@@ -155,10 +207,11 @@ if (modo == "Arquivos individuais" and uploaded_files) or (
         for name, data in converted_files[:3]:
             try:
                 st.image(data, caption=name, use_column_width=True)
-            except:
+            except Exception:
                 pass
         if len(converted_files) > 3:
-            st.caption(f"... e mais {len(converted_files) - 3} imagens convertidas.")
+            st.caption(
+                f"... e mais {len(converted_files) - 3} imagens convertidas.")
 
     # DOWNLOAD ZIP
     zip_buffer = io.BytesIO()
@@ -170,9 +223,13 @@ if (modo == "Arquivos individuais" and uploaded_files) or (
     st.download_button(
         label=f"Baixar todos em ZIP ({formato_saida})",
         data=zip_buffer,
-        file_name=f"imagens_convertidas_{formato_saida.lower()}.zip",
+        file_name=(
+            f"imagens_convertidas_{formato_saida.lower()}.zip"
+        ),
         mime="application/zip",
     )
 
 else:
-    st.warning("Envie arquivos ou uma pasta compactada para iniciar a conversão.")
+    st.warning(
+        "Envie arquivos ou uma pasta compactada para iniciar a conversão."
+    )
